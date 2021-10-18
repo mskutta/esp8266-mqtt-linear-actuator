@@ -16,6 +16,10 @@
   #define MAX_POSITION 8500 
 #endif
 
+#if !(defined(HOME_TIMEOUT))
+  #define HOME_TIMEOUT 10000 
+#endif
+
 #include <Arduino.h>
 
 #include <ESP8266WiFi.h> // WIFI support
@@ -92,7 +96,8 @@ void callback(char* topic, byte* payload, unsigned int length) {
     } else if (value < 0) {
       value = 0;
     }
-    tic.setTargetPosition(value);
+    tic.setTargetPosition(-value);
+    tic.exitSafeStart();
   }
 }
 
@@ -182,22 +187,22 @@ void setup() {
   /* TIC */
   // Set the TIC product
   tic.setProduct(TicProduct::T500);
-  tic.setStepMode(TicStepMode::Microstep2);
+  tic.setStepMode(TicStepMode::Half);
   tic.setMaxAccel(500000);
   tic.setMaxDecel(500000);
 
   // Home
   oled.println(F("Homing..."));
-  tic.setCurrentLimit(500);
+  tic.setCurrentLimit(343);
   tic.setMaxSpeed(10000000);
-  tic.haltAndSetPosition(MAX_POSITION);
-  tic.setTargetPosition(0);
+  tic.haltAndSetPosition(0);
+  tic.setTargetPosition(MAX_POSITION);
   tic.exitSafeStart();
-  delayWhileResettingCommandTimeout(10000);
+  delayWhileResettingCommandTimeout(HOME_TIMEOUT);
   oled.println(F("Homed"));
 
   // Run
-  tic.setCurrentLimit(1000);
+  tic.setCurrentLimit(1092);
   tic.setMaxSpeed(50000000);
   tic.haltAndSetPosition(0);
   tic.exitSafeStart();
