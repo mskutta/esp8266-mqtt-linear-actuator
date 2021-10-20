@@ -8,18 +8,6 @@
   #define ESP_NAME "linear"
 #endif
 
-#if !(defined(DISPLAY_128X32) || defined(DISPLAY_128X64))
-  #define DISPLAY_128X64 1 
-#endif
-
-#if !(defined(MAX_POSITION))
-  #define MAX_POSITION 8500 
-#endif
-
-#if !(defined(HOME_TIMEOUT))
-  #define HOME_TIMEOUT 10000 
-#endif
-
 #include <Arduino.h>
 
 #include <ESP8266WiFi.h> // WIFI support
@@ -33,19 +21,11 @@
 // I2C
 #include <Wire.h>
 
-// Display (SSD1306)
-#include "SSD1306Ascii.h"
-#include "SSD1306AsciiWire.h"
-
 // Stepper Motor Control
 #include <Tic.h>
 
 // MQTT
 #include <PubSubClient.h>
-
-/* Display */
-SSD1306AsciiWire oled;
-uint8_t rowHeight; // pixels per row.
 
 /* WIFI */
 char hostname[32] = {0};
@@ -55,49 +35,61 @@ WiFiClient wifiClient;
 PubSubClient client(wifiClient);
 const char* broker = "10.81.95.165";
 char topicMove[40] = {0};
+char topicMoveAndHold[40] = {0};
 
 /* TIC */
-TicSerial tic(Serial);
+TicI2C tic;
+int32_t currentPosition;
+int32_t lastPosition;
+unsigned long positionTimeout = 0;
+int32_t targetPosition;
+bool setTargetPosition = false;
+bool hold = false;
+
+unsigned long currentMillis = 0;
+unsigned long nextRun = 0;
 
 void configModeCallback (WiFiManager *myWiFiManager) {
-  oled.println(F("Config Mode"));
-  oled.println(WiFi.softAPIP());
-  oled.println(myWiFiManager->getConfigPortalSSID());
+  Serial.println(F("Config Mode"));
+  Serial.println(WiFi.softAPIP());
+  Serial.println(myWiFiManager->getConfigPortalSSID());
 }
 
 void reconnect() {
   while (!client.connected()) {
-    oled.println(F("MQTT Connecting..."));
+    Serial.println(F("MQTT Connecting..."));
     if (client.connect(hostname)) {
-      oled.println(F("MQTT connected"));
+      Serial.println(F("MQTT connected"));
       client.subscribe(topicMove); // "linear##/move"
+      client.subscribe(topicMoveAndHold);
     } else {
-      oled.print(F("."));
+      Serial.print(F("."));
       delay(1000);
     }
   }
 }
 
 void callback(char* topic, byte* payload, unsigned int length) {
-  oled.print(F("t:"));
-  oled.println(topic);
-  oled.print(F("p:"));
+  Serial.print("Message arrived [");
+  Serial.print(topic);
+  Serial.print("] ");
 
   for (unsigned int i = 0; i < length; i++) {
-    oled.print((char)payload[i]);
+    Serial.print((char)payload[i]);
   }
-  oled.println();
+  Serial.println();
 
   if(strcmp(topic, topicMove) == 0 && length > 0) 
   {
-    int value = atoi((char*)payload);
-    if (value > MAX_POSITION) {
-      value = MAX_POSITION;
-    } else if (value < 0) {
-      value = 0;
-    }
-    tic.setTargetPosition(-value);
-    tic.exitSafeStart();
+    targetPosition = -atoi((char*)payload);
+    setTargetPosition = true;
+    hold = false;
+  }
+  else if(strcmp(topic, topicMoveAndHold) == 0 && length > 0) 
+  {
+    targetPosition = -atoi((char*)payload);
+    setTargetPosition = true;
+    hold = true;
   }
 }
 
@@ -118,42 +110,33 @@ void setup() {
   
   /* Serial and I2C */
   Serial.begin(9600);
-  Wire.begin(D2, D1); // join i2c bus with SDA=D1 and SCL=D2 of NodeMCU
+  Wire.begin(D2, D1); // join i2c bus with SDA=D2 and SCL=D1 of NodeMCU
 
-  delay(1000);
-
-  /* Display */
-#if defined DISPLAY_128X64
-  oled.begin(&Adafruit128x64, 0x3C);  // initialize with the I2C addr 0x3C (for the 128x64)
-#else
-  oled.begin(&Adafruit128x32, 0x3C);
-#endif
-  oled.setFont(System5x7);
-  oled.setScrollMode(SCROLL_MODE_AUTO);
-  oled.clear();
+  delay(20);
 
   /* LED */
   pinMode(LED_BUILTIN, OUTPUT);
+  digitalWrite(LED_BUILTIN, LOW);
 
   /* Function Select */
-  oled.println(ESP_NAME);
+  Serial.println(ESP_NAME);
   
   /* WiFi */
   sprintf(hostname, "%s-%06X", ESP_NAME, ESP.getChipId());
   WiFiManager wifiManager;
   wifiManager.setAPCallback(configModeCallback);
   if(!wifiManager.autoConnect(hostname)) {
-    oled.println(F("WiFi Connect Failed"));
+    Serial.println(F("WiFi Connect Failed"));
     //reset and try again, or maybe put it to deep sleep
     ESP.reset();
     delay(1000);
   }
 
-  oled.println(hostname);
-  oled.print(F("  "));
-  oled.println(WiFi.localIP());
-  oled.print(F("  "));
-  oled.println(WiFi.macAddress());
+  Serial.println(hostname);
+  Serial.print(F("  "));
+  Serial.println(WiFi.localIP());
+  Serial.print(F("  "));
+  Serial.println(WiFi.macAddress());
 
   /* OTA */
   ArduinoOTA.setHostname(hostname);
@@ -166,21 +149,21 @@ void setup() {
     }
 
     // NOTE: if updating SPIFFS this would be the place to unmount SPIFFS using SPIFFS.end()
-    oled.println("Start updating " + type);
+    Serial.println("Start updating " + type);
   });
   ArduinoOTA.onEnd([]() {
-    oled.println(F("End"));
+    Serial.println(F("End"));
   });
   ArduinoOTA.onProgress([](unsigned int progress, unsigned int total) {
-    oled.printf("Progress: %u%%\r", (progress / (total / 100)));
+    Serial.printf("Progress: %u%%\r", (progress / (total / 100)));
   });
   ArduinoOTA.onError([](ota_error_t error) {
-    oled.printf("Error[%u]: ", error);
-    if (error == OTA_AUTH_ERROR) { oled.println("Auth Failed"); } 
-    else if (error == OTA_BEGIN_ERROR) { oled.println("Begin Failed"); } 
-    else if (error == OTA_CONNECT_ERROR) { oled.println("Connect Failed"); } 
-    else if (error == OTA_RECEIVE_ERROR) { oled.println("Receive Failed"); } 
-    else if (error == OTA_END_ERROR) { oled.println("End Failed"); }
+    Serial.printf("Error[%u]: ", error);
+    if (error == OTA_AUTH_ERROR) { Serial.println("Auth Failed"); } 
+    else if (error == OTA_BEGIN_ERROR) { Serial.println("Begin Failed"); } 
+    else if (error == OTA_CONNECT_ERROR) { Serial.println("Connect Failed"); } 
+    else if (error == OTA_RECEIVE_ERROR) { Serial.println("Receive Failed"); } 
+    else if (error == OTA_END_ERROR) { Serial.println("End Failed"); }
   });
   ArduinoOTA.begin();
 
@@ -190,28 +173,21 @@ void setup() {
   tic.setStepMode(TicStepMode::Half);
   tic.setMaxAccel(500000);
   tic.setMaxDecel(500000);
-
-  // Home
-  oled.println(F("Homing..."));
-  tic.setCurrentLimit(343);
-  tic.setMaxSpeed(10000000);
-  tic.haltAndSetPosition(0);
-  tic.setTargetPosition(MAX_POSITION);
-  tic.exitSafeStart();
-  delayWhileResettingCommandTimeout(HOME_TIMEOUT);
-  oled.println(F("Homed"));
-
-  // Run
-  tic.setCurrentLimit(1092);
   tic.setMaxSpeed(50000000);
+  tic.setCurrentLimit(1092);
+
   tic.haltAndSetPosition(0);
   tic.exitSafeStart();
-  oled.println(F("Running..."));
+
+  Serial.println(F("Ready..."));
 
   /* MQTT */
   sprintf(topicMove, "%s/move", ESP_NAME);
+  sprintf(topicMoveAndHold, "%s/moveandhold", ESP_NAME);
   client.setServer(broker, 1883);
   client.setCallback(callback);
+
+  digitalWrite(LED_BUILTIN, HIGH);
 }
 
 void loop() {
@@ -223,4 +199,40 @@ void loop() {
   client.loop();
 
   tic.resetCommandTimeout();
+
+  // run once every 100ms
+  currentMillis = millis();
+  if (nextRun < currentMillis) {
+    nextRun = currentMillis + 100;
+    
+    // Get current position
+    currentPosition = tic.getCurrentPosition();
+
+    // Set target position
+    if (setTargetPosition == true) {
+      setTargetPosition = false;
+      if (tic.getEnergized() == false) {
+        tic.energize();
+        digitalWrite(LED_BUILTIN, LOW);
+        tic.haltAndSetPosition(currentPosition);
+      }
+      tic.setTargetPosition(targetPosition);
+      tic.exitSafeStart();
+    }
+
+    // Wait to Denergize if reached target position
+    if (currentPosition != lastPosition) {
+      // Reset 1000ms timeout
+      positionTimeout = currentMillis + 1000;
+    } else if (currentPosition == lastPosition && positionTimeout < currentMillis) {
+      if (currentPosition == targetPosition && hold == false) {
+        if (tic.getEnergized() == true) {
+          tic.deenergize();
+          digitalWrite(LED_BUILTIN, HIGH);
+        }
+      }
+    }
+
+    lastPosition = currentPosition;
+  }
 }
