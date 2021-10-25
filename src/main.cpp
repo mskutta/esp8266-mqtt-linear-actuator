@@ -39,11 +39,12 @@ char topicMoveAndHold[40] = {0};
 
 /* TIC */
 TicI2C tic;
-int32_t currentPosition;
-int32_t lastPosition;
+int32_t currentPosition = 0;
+int32_t lastPosition = 0;
 unsigned long positionTimeout = 0;
-int32_t targetPosition;
+int32_t targetPosition = 0;
 bool setTargetPosition = false;
+bool atTargetPosition = false;
 bool hold = false;
 
 unsigned long currentMillis = 0;
@@ -79,31 +80,27 @@ void callback(char* topic, byte* payload, unsigned int length) {
   }
   Serial.println();
 
+  // null terminate
+  payload[length] = '\0';
+
   if(strcmp(topic, topicMove) == 0 && length > 0) 
   {
     targetPosition = -atoi((char*)payload);
     setTargetPosition = true;
+    atTargetPosition = false;
     hold = false;
+    Serial.print("Target Position: ");
+    Serial.println(targetPosition);
   }
   else if(strcmp(topic, topicMoveAndHold) == 0 && length > 0) 
   {
     targetPosition = -atoi((char*)payload);
     setTargetPosition = true;
+    atTargetPosition = false;
     hold = true;
+    Serial.print("Target Position: ");
+    Serial.println(targetPosition);
   }
-}
-
-// Delays for the specified number of milliseconds while
-// resetting the Tic's command timeout so that its movement does
-// not get interrupted by errors.
-void delayWhileResettingCommandTimeout(uint32_t ms)
-{
-  uint32_t start = millis();
-  do
-  {
-    delay(20);
-    tic.resetCommandTimeout();
-  } while ((uint32_t)(millis() - start) <= ms);
 }
 
 void setup() {
@@ -176,7 +173,7 @@ void setup() {
   tic.setMaxSpeed(50000000);
   tic.setCurrentLimit(1092);
 
-  tic.haltAndSetPosition(0);
+  tic.haltAndSetPosition(currentPosition);
   tic.exitSafeStart();
 
   Serial.println(F("Ready..."));
@@ -213,21 +210,32 @@ void loop() {
       setTargetPosition = false;
       if (tic.getEnergized() == false) {
         tic.energize();
+        Serial.println("Energize");
         digitalWrite(LED_BUILTIN, LOW);
         tic.haltAndSetPosition(currentPosition);
+        Serial.print("Halt and Set Position: ");
+        Serial.println(currentPosition);
       }
       tic.setTargetPosition(targetPosition);
       tic.exitSafeStart();
+      Serial.print("Set Target Position: ");
+      Serial.println(targetPosition);
     }
 
     // Wait to Denergize if reached target position
-    if (currentPosition != lastPosition) {
-      // Reset 1000ms timeout
-      positionTimeout = currentMillis + 1000;
-    } else if (currentPosition == lastPosition && positionTimeout < currentMillis) {
-      if (currentPosition == targetPosition && hold == false) {
-        if (tic.getEnergized() == true) {
+    if (atTargetPosition == false)
+    {
+      if (currentPosition != lastPosition) {
+        // Reset 1000ms timeout
+        positionTimeout = currentMillis + 1000;
+      } else if (currentPosition == lastPosition && positionTimeout < currentMillis && currentPosition == targetPosition) {
+        atTargetPosition = true;
+        Serial.print("At target position: ");
+        Serial.println(targetPosition);
+        if (hold == false && tic.getEnergized() == true) {
           tic.deenergize();
+          Serial.println("Deenergize");
+
           digitalWrite(LED_BUILTIN, HIGH);
         }
       }
